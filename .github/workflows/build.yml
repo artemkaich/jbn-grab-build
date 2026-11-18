@@ -1,0 +1,66 @@
+
+name: Build JBN Grab (Linux i386)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Unpack project archive
+        run: |
+          unzip -q JBN_GRAB_GITHUB_BUILD.zip
+          test -d JBN_GRAB_GITHUB_BUILD/bundle
+
+      - name: Install 32-bit build dependencies
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gcc-multilib g++-multilib cmake file binutils \
+            libc6-i386 lib32gcc-s1 lib32stdc++6
+
+      - name: Compile Metamod native module (i386)
+        run: |
+          cd JBN_GRAB_GITHUB_BUILD/bundle/native/jbn_bsp_native
+          chmod +x build_metamod_linux.sh
+          ./build_metamod_linux.sh
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          cp build-mm/jbn_bsp_native.so "$GITHUB_WORKSPACE/dist/"
+          file "$GITHUB_WORKSPACE/dist/jbn_bsp_native.so"
+          readelf -h "$GITHUB_WORKSPACE/dist/jbn_bsp_native.so" | grep -E 'Class:|Machine:'
+
+      - name: Compile AMXX plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd JBN_GRAB_GITHUB_BUILD
+          chmod +x amxmodx-compiler/amxxpc
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          ./amxmodx-compiler/amxxpc \
+            "$GITHUB_WORKSPACE/JBN_GRAB_GITHUB_BUILD/bundle/addons/amxmodx/scripting/jbn_grab.sma" \
+            -i"$GITHUB_WORKSPACE/JBN_GRAB_GITHUB_BUILD/bundle/addons/amxmodx/scripting/include" \
+            -i"$GITHUB_WORKSPACE/JBN_GRAB_GITHUB_BUILD/amxmodx-compiler/include" \
+            -o"$GITHUB_WORKSPACE/dist/jbn_grab.amxx"
+          test -s "$GITHUB_WORKSPACE/dist/jbn_grab.amxx"
+
+      - name: Include installation files and checksums
+        run: |
+          cp JBN_GRAB_GITHUB_BUILD/bundle/addons/amxmodx/configs/jbn_grab.ini dist/
+          cp JBN_GRAB_GITHUB_BUILD/bundle/INSTALL_RU.txt dist/
+          (cd dist && sha256sum * > SHA256SUMS.txt)
+          ls -lh dist/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: JBN-GRAB-LINUX-I386
+          path: dist/
+          if-no-files-found: error
