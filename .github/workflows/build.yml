@@ -1,9 +1,9 @@
 
-name: Build JBN Grab (Linux i386)
+name: Build JBN Grab
 
 on:
   push:
-    branches: [main]
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
@@ -14,99 +14,77 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract source archive
-        run: |
-          set -euo pipefail
-          unzip -q JBN_GRAB_GITHUB_BUILD.zip
-          test -d JBN_GRAB_GITHUB_BUILD
-
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential \
             cmake \
+            g++ \
             gcc-multilib \
             g++-multilib \
-            libc6-i386 \
-            lib32gcc-s1 \
-            lib32stdc++6 \
-            lib32z1 \
-            util-linux \
-            file \
-            binutils
+            libc6-dev-i386 \
+            libstdc++6:i386 \
+            zlib1g:i386 \
+            unzip
 
-      - name: Build Metamod native module
+      - name: Extract project
         run: |
-          set -euo pipefail
+          mkdir -p JBN_GRAB_GITHUB_BUILD
+          ZIP_FILE=$(find . -maxdepth 1 -name '*.zip' | head -n 1)
+          if [ -z "$ZIP_FILE" ]; then
+            echo "Project ZIP not found"
+            exit 1
+          fi
+          unzip -o "$ZIP_FILE" -d JBN_GRAB_GITHUB_BUILD
 
-          PROJECT="$GITHUB_WORKSPACE/JBN_GRAB_GITHUB_BUILD"
-          NATIVE="$PROJECT/bundle/native/jbn_bsp_native"
+      - name: Set project paths
+        run: |
+          echo "PROJECT=$GITHUB_WORKSPACE/JBN_GRAB_GITHUB_BUILD" >> "$GITHUB_ENV"
+          echo "COMPILER=$GITHUB_WORKSPACE/JBN_GRAB_GITHUB_BUILD/amxmodx-compiler" >> "$GITHUB_ENV"
 
-          cd "$NATIVE"
-
+      - name: Build Metamod plugin
+        run: |
+          cd "$PROJECT/bundle/native/jbn_bsp_native"
           chmod +x build_metamod_linux.sh
           ./build_metamod_linux.sh
 
-          mkdir -p "$GITHUB_WORKSPACE/dist"
-          cp build-mm/jbn_bsp_native.so \
-            "$GITHUB_WORKSPACE/dist/jbn_bsp_native.so"
-
-          file "$GITHUB_WORKSPACE/dist/jbn_bsp_native.so"
-          readelf -h "$GITHUB_WORKSPACE/dist/jbn_bsp_native.so" | grep -E 'Class:|Machine:'
+      - name: Check native plugin
+        run: |
+          find "$PROJECT" -name 'jbn_bsp_native.so' -type f
+          test -f "$PROJECT/bundle/native/jbn_bsp_native/build-mm/jbn_bsp_native.so"
+          file "$PROJECT/bundle/native/jbn_bsp_native/build-mm/jbn_bsp_native.so"
 
       - name: Compile AMXX plugin
         run: |
-          set -euo pipefail
+          cd "$COMPILER"
+          chmod +x amxxpc
+          export LD_LIBRARY_PATH="$COMPILER:$LD_LIBRARY_PATH"
 
-          PROJECT="$GITHUB_WORKSPACE/JBN_GRAB_GITHUB_BUILD"
-          COMPILER="$PROJECT/amxmodx-compiler"
           SOURCE="$PROJECT/bundle/addons/amxmodx/scripting/jbn_grab.sma"
-
           test -f "$SOURCE"
           test -f "$COMPILER/amxxpc"
-          test -f "$COMPILER/amxxpc32.so"
 
-          cd "$COMPILER"
-
-          chmod +x ./amxxpc
-          unset LD_PRELOAD
-          unset LD_LIBRARY_PATH
-
-          linux32 ./amxxpc \
-            "$SOURCE" \
+          ./amxxpc "$SOURCE" \
             -i"$PROJECT/bundle/addons/amxmodx/scripting/include" \
             -i"$COMPILER/include" \
-            -o"$GITHUB_WORKSPACE/dist/jbn_grab.amxx"
+            -o"$GITHUB_WORKSPACE/jbn_grab.amxx"
 
-          test -s "$GITHUB_WORKSPACE/dist/jbn_grab.amxx"
-
-      - name: Prepare package
+      - name: Verify AMXX plugin
         run: |
-          set -euo pipefail
+          test -s "$GITHUB_WORKSPACE/jbn_grab.amxx"
+          file "$GITHUB_WORKSPACE/jbn_grab.amxx"
 
-          PROJECT="$GITHUB_WORKSPACE/JBN_GRAB_GITHUB_BUILD"
+      - name: Prepare release package
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          cp "$PROJECT/bundle/native/jbn_bsp_native/build-mm/jbn_bsp_native.so" \
+            "$GITHUB_WORKSPACE/dist/"
+          cp "$GITHUB_WORKSPACE/jbn_grab.amxx" \
+            "$GITHUB_WORKSPACE/dist/"
 
-          if [ -f "$PROJECT/bundle/addons/amxmodx/configs/jbn_grab.ini" ]; then
-            cp "$PROJECT/bundle/addons/amxmodx/configs/jbn_grab.ini" \
-              "$GITHUB_WORKSPACE/dist/"
-          fi
-
-          if [ -f "$PROJECT/bundle/INSTALL_RU.txt" ]; then
-            cp "$PROJECT/bundle/INSTALL_RU.txt" \
-              "$GITHUB_WORKSPACE/dist/"
-          fi
-
-          cd "$GITHUB_WORKSPACE"
-          sha256sum dist/* > dist/SHA256SUMS
-          zip -r JBN_GRAB_LINUX_BUILD.zip dist
-
-      - name: Upload build artifacts
+      - name: Upload compiled plugins
         uses: actions/upload-artifact@v4
         with:
-          name: JBN_GRAB_LINUX_BUILD
-          path: |
-            dist/
-            JBN_GRAB_LINUX_BUILD.zip
-          if-no-files-found: error
+          name: jbn-grab-linux
+          path: dist/
