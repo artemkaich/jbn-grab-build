@@ -12,6 +12,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-22.04
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -35,22 +36,27 @@ jobs:
             find "$GITHUB_WORKSPACE" -maxdepth 4 -type f | sort | head -200
             exit 1
           fi
+
           EXTRACT_DIR="$RUNNER_TEMP/jbn-grab-project"
           mkdir -p "$EXTRACT_DIR"
           unzip -q "$ZIP_FILE" -d "$EXTRACT_DIR"
+
           CMAKE_FILE="$(find "$EXTRACT_DIR" -type f -path '*/bundle/native/jbn_bsp_native/CMakeLists.txt' -print -quit)"
           if [[ -z "$CMAKE_FILE" ]]; then
             echo "ERROR: CMakeLists.txt for jbn_bsp_native was not found inside ZIP."
             find "$EXTRACT_DIR" -maxdepth 8 -type f | sort | head -300
             exit 1
           fi
+
           PROJECT="$(cd "$(dirname "$CMAKE_FILE")/../../.." && pwd)"
           SOURCE="$PROJECT/bundle/addons/amxmodx/scripting/jbn_grab.sma"
           INCLUDE="$PROJECT/bundle/addons/amxmodx/scripting/include"
           NATIVE="$PROJECT/bundle/native/jbn_bsp_native"
+
           test -f "$SOURCE"
           test -f "$INCLUDE/jbe_core.inc"
           test -f "$NATIVE/build_metamod_linux.sh"
+
           echo "project=$PROJECT" >> "$GITHUB_OUTPUT"
           echo "source=$SOURCE" >> "$GITHUB_OUTPUT"
           echo "include=$INCLUDE" >> "$GITHUB_OUTPUT"
@@ -63,9 +69,11 @@ jobs:
           set -euo pipefail
           AMXX_ARCHIVE="$RUNNER_TEMP/amxmodx-base.tar.gz"
           AMXX_URL="https://www.amxmodx.org/amxxdrop/1.10/amxmodx-1.10.0-git5488-base-linux.tar.gz"
+
           curl -fL --retry 3 "$AMXX_URL" -o "$AMXX_ARCHIVE"
           mkdir -p "$RUNNER_TEMP/amxx"
           tar -xzf "$AMXX_ARCHIVE" -C "$RUNNER_TEMP/amxx"
+
           AMXX_SCRIPTING="$RUNNER_TEMP/amxx/addons/amxmodx/scripting"
           test -x "$AMXX_SCRIPTING/amxxpc"
           chmod +x "$AMXX_SCRIPTING/amxxpc"
@@ -81,29 +89,43 @@ jobs:
           cd "$NATIVE"
           chmod +x build_metamod_linux.sh
           ./build_metamod_linux.sh
+
           SO_FILE="$(find "$NATIVE" -type f -name '*.so' -print -quit)"
           if [[ -z "$SO_FILE" ]]; then
             echo "ERROR: Native build completed but no .so file was found."
             find "$NATIVE" -maxdepth 5 -type f | sort
             exit 1
           fi
+
           file "$SO_FILE"
           file "$SO_FILE" | grep -q 'ELF 32-bit'
           mkdir -p "$GITHUB_WORKSPACE/dist"
           cp "$SO_FILE" "$GITHUB_WORKSPACE/dist/jbn_bsp_native.so"
 
-      - name: Compile AMXX plugin with official compiler
+      - name: Compile AMXX plugin (diagnostic reduced edge table)
         shell: bash
         run: |
           set -euo pipefail
           SOURCE="${{ steps.project.outputs.source }}"
           INCLUDE="${{ steps.project.outputs.include }}"
           OUTPUT="$GITHUB_WORKSPACE/dist/jbn_grab.amxx"
+          DIAG_SOURCE="$RUNNER_TEMP/jbn_grab_diag.sma"
+
           mkdir -p "$GITHUB_WORKSPACE/dist"
           cp "$INCLUDE/jbe_core.inc" "$AMXX_SCRIPTING/include/jbe_core.inc"
+
+          # Diagnostic only: the original source is kept unchanged in the ZIP.
+          # This replaces the exact define found in the supplied jbn_grab.sma.
+          if ! grep -q '^#define BSP_MAX_EDGE_TABLE 131072$' "$SOURCE"; then
+            echo "ERROR: Expected BSP_MAX_EDGE_TABLE define was not found; refusing to alter source unexpectedly."
+            grep -n 'BSP_MAX_EDGE_TABLE' "$SOURCE" || true
+            exit 1
+          fi
+          sed 's/^#define BSP_MAX_EDGE_TABLE 131072$/#define BSP_MAX_EDGE_TABLE 32768/' "$SOURCE" > "$DIAG_SOURCE"
+
           chmod +x "$AMXX_SCRIPTING/amxxpc"
           cd "$AMXX_SCRIPTING"
-          ./amxxpc "$SOURCE" -i"$INCLUDE" -i"$AMXX_SCRIPTING/include" -o"$OUTPUT"
+          ./amxxpc "$DIAG_SOURCE" -i"$INCLUDE" -i"$AMXX_SCRIPTING/include" -o"$OUTPUT"
           test -s "$OUTPUT"
           file "$OUTPUT"
 
