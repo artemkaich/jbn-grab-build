@@ -1,4 +1,5 @@
-name: Build JBN Grab (Linux i386, AMX Mod X 1.9.0)
+
+name: JBN Grab Diagnostic Build
 
 on:
   workflow_dispatch:
@@ -10,134 +11,220 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  diagnose:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install i386 build dependencies
-        shell: bash
+      - name: Install dependencies
         run: |
-          set -euo pipefail
           sudo dpkg --add-architecture i386
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake git curl unzip file gcc-multilib g++-multilib libc6-i386 lib32gcc-s1 lib32stdc++6
+          sudo apt-get install -y \
+            unzip curl file python3 \
+            build-essential cmake git \
+            gcc-multilib g++-multilib \
+            libc6-i386 lib32gcc-s1 lib32stdc++6
 
-      - name: Extract project ZIP and detect project root
+      - name: Extract project
         id: project
         shell: bash
         run: |
           set -euo pipefail
 
-          ZIP_FILE="$(find "$GITHUB_WORKSPACE" -maxdepth 4 -type f -iname 'JBN_GRAB_GITHUB_BUILD.zip' -print -quit)"
-          if [[ -z "$ZIP_FILE" ]]; then
-            echo "ERROR: JBN_GRAB_GITHUB_BUILD.zip was not found in the repository."
-            find "$GITHUB_WORKSPACE" -maxdepth 5 -type f | sort | head -200
-            exit 1
-          fi
+          ZIP=$(find . -name 'JBN_GRAB_GITHUB_BUILD.zip' -print -quit)
+          test -n "$ZIP"
 
-          EXTRACT_DIR="$RUNNER_TEMP/jbn-grab-project"
-          mkdir -p "$EXTRACT_DIR"
-          unzip -q "$ZIP_FILE" -d "$EXTRACT_DIR"
+          mkdir -p "$RUNNER_TEMP/project"
+          unzip -q "$ZIP" -d "$RUNNER_TEMP/project"
 
-          CMAKE_FILE="$(find "$EXTRACT_DIR" -type f -path '*/bundle/native/jbn_bsp_native/CMakeLists.txt' -print -quit)"
-          if [[ -z "$CMAKE_FILE" ]]; then
-            echo "ERROR: CMakeLists.txt for jbn_bsp_native was not found inside ZIP."
-            find "$EXTRACT_DIR" -maxdepth 9 -type f | sort | head -300
-            exit 1
-          fi
+          CMAKE=$(find "$RUNNER_TEMP/project" \
+            -path '*/bundle/native/jbn_bsp_native/CMakeLists.txt' \
+            -print -quit)
 
-          PROJECT="$(cd "$(dirname "$CMAKE_FILE")/../../.." && pwd)"
+          test -n "$CMAKE"
+
+          PROJECT=$(cd "$(dirname "$CMAKE")/../../.." && pwd)
+
           SOURCE="$PROJECT/bundle/addons/amxmodx/scripting/jbn_grab.sma"
           INCLUDE="$PROJECT/bundle/addons/amxmodx/scripting/include"
-          NATIVE="$PROJECT/bundle/native/jbn_bsp_native"
 
           test -f "$SOURCE"
           test -f "$INCLUDE/jbe_core.inc"
-          test -f "$NATIVE/build_metamod_linux.sh"
 
-          echo "project=$PROJECT" >> "$GITHUB_OUTPUT"
           echo "source=$SOURCE" >> "$GITHUB_OUTPUT"
           echo "include=$INCLUDE" >> "$GITHUB_OUTPUT"
-          echo "native=$NATIVE" >> "$GITHUB_OUTPUT"
-          echo "Detected project root: $PROJECT"
 
-      - name: Download official AMX Mod X 1.9.0 compiler from GitHub
-        shell: bash
+          echo "Project: $PROJECT"
+          wc -lc "$SOURCE"
+
+      - name: Download AMXX 1.9.0 from GitHub
         run: |
           set -euo pipefail
 
-          AMXX_VERSION="1.9.0-git5303"
-          AMXX_ARCHIVE="$RUNNER_TEMP/amxmodx-${AMXX_VERSION}-base-linux.tar.gz"
-          AMXX_URL="https://github.com/alliedmodders/amxmodx/releases/download/1.9.0.5303/amxmodx-1.9.0-git5303-base-linux.tar.gz"
-          curl -fL --retry 3 --retry-delay 2 "$AMXX_URL" -o "$AMXX_ARCHIVE"
+          URL="https://github.com/alliedmodders/amxmodx/releases/download/1.9.0.5303/amxmodx-1.9.0-git5303-base-linux.tar.gz"
+
+          curl -fL --retry 3 "$URL" \
+            -o "$RUNNER_TEMP/amxx.tar.gz"
+
           mkdir -p "$RUNNER_TEMP/amxx"
-          tar -xzf "$AMXX_ARCHIVE" -C "$RUNNER_TEMP/amxx"
 
-          AMXX_SCRIPTING="$RUNNER_TEMP/amxx/addons/amxmodx/scripting"
-          if [[ ! -x "$AMXX_SCRIPTING/amxxpc" ]]; then
-            echo "ERROR: amxxpc was not found in the downloaded AMX Mod X 1.9.0 archive."
-            find "$RUNNER_TEMP/amxx" -type f -name amxxpc -o -name 'amxxpc*'
-            exit 1
-          fi
+          tar -xzf "$RUNNER_TEMP/amxx.tar.gz" \
+            -C "$RUNNER_TEMP/amxx"
 
-          chmod +x "$AMXX_SCRIPTING/amxxpc"
-          echo "AMXX_SCRIPTING=$AMXX_SCRIPTING" >> "$GITHUB_ENV"
-          file "$AMXX_SCRIPTING/amxxpc"
-          echo "Using AMX Mod X compiler 1.9.0-git5303 from alliedmodders/amxmodx GitHub release."
+          AMXX="$RUNNER_TEMP/amxx/addons/amxmodx/scripting"
 
-      - name: Build Metamod native module (Linux i386)
-        shell: bash
+          test -x "$AMXX/amxxpc"
+
+          chmod +x "$AMXX/amxxpc"
+
+          echo "AMXX_SCRIPTING=$AMXX" >> "$GITHUB_ENV"
+
+          "$AMXX/amxxpc" 2>&1 | head -10 || true
+
+      - name: Prepare includes
         run: |
           set -euo pipefail
 
-          NATIVE="${{ steps.project.outputs.native }}"
-          cd "$NATIVE"
-          chmod +x build_metamod_linux.sh
-          ./build_metamod_linux.sh
-
-          SO_FILE="$(find "$NATIVE" -type f -name '*.so' -print -quit)"
-          if [[ -z "$SO_FILE" ]]; then
-            echo "ERROR: Native build completed but no .so file was found."
-            find "$NATIVE" -maxdepth 6 -type f | sort
-            exit 1
-          fi
-
-          file "$SO_FILE"
-          file "$SO_FILE" | grep -q 'ELF 32-bit'
-          mkdir -p "$GITHUB_WORKSPACE/dist"
-          cp "$SO_FILE" "$GITHUB_WORKSPACE/dist/jbn_bsp_native.so"
-
-      - name: Compile AMXX plugin with AMX Mod X 1.9.0
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SOURCE="${{ steps.project.outputs.source }}"
           INCLUDE="${{ steps.project.outputs.include }}"
-          OUTPUT="$GITHUB_WORKSPACE/dist/jbn_grab.amxx"
 
-          mkdir -p "$GITHUB_WORKSPACE/dist"
-          cp "$INCLUDE/jbe_core.inc" "$AMXX_SCRIPTING/include/jbe_core.inc"
+          cp "$INCLUDE/jbe_core.inc" \
+            "$AMXX_SCRIPTING/include/jbe_core.inc"
 
-          chmod +x "$AMXX_SCRIPTING/amxxpc"
-          cd "$AMXX_SCRIPTING"
+      - name: Diagnose compiler crash
+        shell: bash
+        run: |
+          set -uo pipefail
 
-          echo "Compiler version:"
-          ./amxxpc 2>&1 | head -20 || true
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
 
-          echo "Compiling original source without diagnostic edits..."
-          ./amxxpc "$SOURCE" -i"$INCLUDE" -i"$AMXX_SCRIPTING/include" -o"$OUTPUT"
+          source = Path("${{ steps.project.outputs.source }}")
+          include = "${{ steps.project.outputs.include }}"
 
-          test -s "$OUTPUT"
-          file "$OUTPUT"
-          ls -lh "$OUTPUT"
+          compiler = Path(os.environ["AMXX_SCRIPTING"]) / "amxxpc"
+          compiler_inc = Path(os.environ["AMXX_SCRIPTING"]) / "include"
 
-      - name: Upload Linux build artifacts
+          text = source.read_text(
+              encoding="utf-8",
+              errors="replace"
+          )
+
+          pattern = re.compile(
+              r'^(?:(?:public|stock)\s+)?'
+              r'(?:(?:Float|bool|[A-Za-z_]\w*):\s*)?'
+              r'([A-Za-z_]\w*)\s*\([^;{}]*?\)\s*\{',
+              re.MULTILINE
+          )
+
+          excluded = {"if", "for", "while", "switch"}
+
+          matches = [
+              m for m in pattern.finditer(text)
+              if m.group(1) not in excluded
+          ]
+
+          print(f"Source lines: {len(text.splitlines())}")
+          print(f"Detected function candidates: {len(matches)}")
+
+          if not matches:
+              print("Could not detect function declarations.")
+              raise SystemExit(1)
+
+          temp = Path(os.environ["RUNNER_TEMP"])
+          test_file = temp / "jbn_test.sma"
+          output = temp / "jbn_test.amxx"
+
+          def compile_test(count):
+              end = matches[count].start() if count < len(matches) else len(text)
+
+              test_file.write_text(text[:end], encoding="utf-8")
+
+              cmd = [
+                  str(compiler),
+                  str(test_file),
+                  f"-i{include}",
+                  f"-i{compiler_inc}",
+                  f"-o{output}"
+              ]
+
+              try:
+                  result = subprocess.run(
+                      cmd,
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.STDOUT,
+                      text=True,
+                      timeout=120
+                  )
+
+                  log = result.stdout or ""
+
+                  crashed = (
+                      result.returncode in (-6, 134, 139)
+                      or "std::bad_alloc" in log
+                  )
+
+                  print(
+                      f"Functions: {count}/{len(matches)} "
+                      f"Exit: {result.returncode} "
+                      f"Crash: {crashed}"
+                  )
+
+                  if crashed:
+                      print(log[-3000:])
+
+                  return crashed
+
+              except subprocess.TimeoutExpired:
+                  print("Compiler timeout.")
+                  return False
+
+          print("Testing global declarations...")
+
+          if compile_test(0):
+              print("CRASH: GLOBAL DECLARATIONS OR INCLUDES")
+              raise SystemExit(0)
+
+          print("Testing complete source...")
+
+          if not compile_test(len(matches)):
+              print("Full source did not reproduce bad_alloc.")
+              raise SystemExit(0)
+
+          low = 1
+          high = len(matches)
+
+          while low < high:
+              middle = (low + high) // 2
+
+              if compile_test(middle):
+                  high = middle
+              else:
+                  low = middle + 1
+
+          culprit = matches[low - 1]
+
+          line = text.count("\n", 0, culprit.start()) + 1
+
+          print("")
+          print("========== RESULT ==========")
+          print("First crashing source prefix:")
+          print("Function:", culprit.group(1))
+          print("Line:", line)
+          print("============================")
+
+          PY
+
+      - name: Upload diagnostic information
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: jbn-grab-linux-amxx-1.9.0
-          path: dist/
-          if-no-files-found: error
+          name: jbn-grab-diagnostic
+          path: |
+            ${{ runner.temp }}/jbn_test.sma
+          if-no-files-found: warn
