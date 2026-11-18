@@ -10,14 +10,18 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-22.04
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Unpack project archive
+        shell: bash
         run: |
+          set -euo pipefail
           unzip -q JBN_GRAB_GITHUB_BUILD.zip
           test -d JBN_GRAB_GITHUB_BUILD/bundle
+          test -f JBN_GRAB_GITHUB_BUILD/amxmodx-compiler/amxxpc32.so
 
       - name: Install 32-bit build dependencies
         run: |
@@ -28,42 +32,64 @@ jobs:
             libc6-i386 lib32gcc-s1 lib32stdc++6
 
       - name: Compile Metamod native module (i386)
-        run: |
-          cd JBN_GRAB_GITHUB_BUILD/bundle/native/jbn_bsp_native
-          chmod +x build_metamod_linux.sh
-          ./build_metamod_linux.sh
-          mkdir -p "$GITHUB_WORKSPACE/dist"
-          cp build-mm/jbn_bsp_native.so "$GITHUB_WORKSPACE/dist/"
-          file "$GITHUB_WORKSPACE/dist/jbn_bsp_native.so"
-          readelf -h "$GITHUB_WORKSPACE/dist/jbn_bsp_native.so" | grep -E 'Class:|Machine:'
-
-            - name: Compile AMXX plugin
         shell: bash
         run: |
           set -euo pipefail
 
           PROJECT="$GITHUB_WORKSPACE/JBN_GRAB_GITHUB_BUILD"
-          cd "$PROJECT/amxmodx-compiler"
+          cd "$PROJECT/bundle/native/jbn_bsp_native"
+
+          chmod +x build_metamod_linux.sh
+          ./build_metamod_linux.sh
+
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          cp build-mm/jbn_bsp_native.so "$GITHUB_WORKSPACE/dist/"
+
+          file "$GITHUB_WORKSPACE/dist/jbn_bsp_native.so"
+          readelf -h "$GITHUB_WORKSPACE/dist/jbn_bsp_native.so" | grep -E 'Class:|Machine:'
+
+      - name: Compile AMXX plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PROJECT="$GITHUB_WORKSPACE/JBN_GRAB_GITHUB_BUILD"
+          COMPILER="$PROJECT/amxmodx-compiler"
+
+          cd "$COMPILER"
 
           chmod +x amxxpc
-          export LD_LIBRARY_PATH="$PWD:${LD_LIBRARY_PATH:-}"
+          chmod +x amxxpc32.so
+
+          export LD_LIBRARY_PATH="$COMPILER:${LD_LIBRARY_PATH:-}"
 
           mkdir -p "$GITHUB_WORKSPACE/dist"
 
           ./amxxpc \
             "$PROJECT/bundle/addons/amxmodx/scripting/jbn_grab.sma" \
             -i"$PROJECT/bundle/addons/amxmodx/scripting/include" \
-            -i"$PROJECT/amxmodx-compiler/include" \
+            -i"$COMPILER/include" \
             -o"$GITHUB_WORKSPACE/dist/jbn_grab.amxx"
 
           test -s "$GITHUB_WORKSPACE/dist/jbn_grab.amxx"
+
           ls -lh "$GITHUB_WORKSPACE/dist/"
 
       - name: Include installation files and checksums
+        shell: bash
         run: |
-          cp JBN_GRAB_GITHUB_BUILD/bundle/addons/amxmodx/configs/jbn_grab.ini dist/
-          cp JBN_GRAB_GITHUB_BUILD/bundle/INSTALL_RU.txt dist/
+          set -euo pipefail
+
+          PROJECT="$GITHUB_WORKSPACE/JBN_GRAB_GITHUB_BUILD"
+
+          cp "$PROJECT/bundle/addons/amxmodx/configs/jbn_grab.ini" dist/
+
+          if [ -f "$PROJECT/bundle/INSTALL_RU.txt" ]; then
+            cp "$PROJECT/bundle/INSTALL_RU.txt" dist/
+          fi
+
           (cd dist && sha256sum * > SHA256SUMS.txt)
+
           ls -lh dist/
 
       - name: Upload build artifacts
