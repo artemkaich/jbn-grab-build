@@ -1,84 +1,93 @@
-            echo "Expected exactly one ZIP in repository root; found ${#zips[@]}"
-            printf '%s\n' "${zips[@]}"
+          ZIP_FILE="$(find "$GITHUB_WORKSPACE" -maxdepth 2 -type f -iname 'JBN_GRAB_GITHUB_BUILD.zip' -print -quit)"
+          if [[ -z "$ZIP_FILE" ]]; then
+            echo "ERROR: JBN_GRAB_GITHUB_BUILD.zip was not found in the repository."
+            echo "Files in repository:"
+            find "$GITHUB_WORKSPACE" -maxdepth 3 -type f | sort | head -200
             exit 1
           fi
-          unzip -q "${zips[0]}" -d "$RUNNER_TEMP/jbn-extract"
-          mapfile -t projects < <(find "$RUNNER_TEMP/jbn-extract" -type f -path '*/bundle/native/jbn_bsp_native/CMakeLists.txt' -print)
-          if [[ ${#projects[@]} -ne 1 ]]; then
-            echo "Expected one project CMakeLists.txt; found ${#projects[@]}"
-            printf '%s\n' "${projects[@]}"
+
+          EXTRACT_DIR="$RUNNER_TEMP/jbn-grab-project"
+          mkdir -p "$EXTRACT_DIR"
+          unzip -q "$ZIP_FILE" -d "$EXTRACT_DIR"
+
+          CMAKE_FILE="$(find "$EXTRACT_DIR" -type f -path '*/bundle/native/jbn_bsp_native/CMakeLists.txt' -print -quit)"
+          if [[ -z "$CMAKE_FILE" ]]; then
+            echo "ERROR: Could not find bundle/native/jbn_bsp_native/CMakeLists.txt inside ZIP."
+            find "$EXTRACT_DIR" -maxdepth 6 -type f | sort | head -300
             exit 1
           fi
-          PROJECT="${projects[0]%/bundle/native/jbn_bsp_native/CMakeLists.txt}"
-          test -s "$PROJECT/bundle/addons/amxmodx/scripting/jbn_grab.sma"
-          test -s "$PROJECT/bundle/addons/amxmodx/scripting/include/jbe_core.inc"
-          test -d "$PROJECT/sdk/Metamod-R-master"
-          echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
+
+          PROJECT="$(dirname "$(dirname "$(dirname "$CMAKE_FILE")")")"
+          SOURCE="$PROJECT/bundle/addons/amxmodx/scripting/jbn_grab.sma"
+          INCLUDE="$PROJECT/bundle/addons/amxmodx/scripting/include"
+          NATIVE="$PROJECT/bundle/native/jbn_bsp_native"
+
+          test -f "$SOURCE"
+          test -f "$INCLUDE/jbe_core.inc"
+          test -f "$NATIVE/build_metamod_linux.sh"
+          echo "project=$PROJECT" >> "$GITHUB_OUTPUT"
+          echo "source=$SOURCE" >> "$GITHUB_OUTPUT"
+          echo "include=$INCLUDE" >> "$GITHUB_OUTPUT"
+          echo "native=$NATIVE" >> "$GITHUB_OUTPUT"
           echo "Detected project root: $PROJECT"
 
       - name: Download official AMX Mod X 1.10 compiler
         shell: bash
         run: |
           set -euo pipefail
+          AMXX_ARCHIVE="$RUNNER_TEMP/amxmodx-base.tar.gz"
+          AMXX_URL="https://www.amxmodx.org/amxxdrop/1.10/amxmodx-1.10.0-git5488-base-linux.tar.gz"
+          curl -fL --retry 3 "$AMXX_URL" -o "$AMXX_ARCHIVE"
           mkdir -p "$RUNNER_TEMP/amxx"
-          curl -fL --retry 3 \
-            "https://www.amxmodx.org/amxxdrop/1.10/amxmodx-1.10.0-git5488-base-linux.tar.gz" \
-            -o "$RUNNER_TEMP/amxx-base.tar.gz"
-          tar -xzf "$RUNNER_TEMP/amxx-base.tar.gz" -C "$RUNNER_TEMP/amxx"
-          COMPILER="$RUNNER_TEMP/amxx/addons/amxmodx/scripting"
-          test -s "$COMPILER/amxxpc"
-          test -s "$COMPILER/amxxpc32.so"
-          test -f "$COMPILER/include/amxmodx.inc"
-          chmod +x "$COMPILER/amxxpc"
-          echo "AMXX_COMPILER=$COMPILER" >> "$GITHUB_ENV"
-          file "$COMPILER/amxxpc"
-          strings "$COMPILER/amxxpc" | grep -m1 '1\.10\.0' || true
+          tar -xzf "$AMXX_ARCHIVE" -C "$RUNNER_TEMP/amxx"
+          AMXX_SCRIPTING="$RUNNER_TEMP/amxx/addons/amxmodx/scripting"
+          test -x "$AMXX_SCRIPTING/amxxpc"
+          chmod +x "$AMXX_SCRIPTING/amxxpc"
+          echo "AMXX_SCRIPTING=$AMXX_SCRIPTING" >> "$GITHUB_ENV"
+          file "$AMXX_SCRIPTING/amxxpc"
+          "$AMXX_SCRIPTING/amxxpc" 2>&1 | head -20 || true
 
-      - name: Build Metamod native plugin (i386)
+      - name: Build Metamod native module (Linux i386)
         shell: bash
         run: |
           set -euo pipefail
-          cd "$PROJECT/bundle/native/jbn_bsp_native"
+          NATIVE="${{ steps.project.outputs.native }}"
+          cd "$NATIVE"
           chmod +x build_metamod_linux.sh
           ./build_metamod_linux.sh
-          test -s build-mm/jbn_bsp_native.so
-          file build-mm/jbn_bsp_native.so | grep -q 'ELF 32-bit'
+
+          SO_FILE="$(find "$NATIVE" -type f -name '*.so' -print -quit)"
+          if [[ -z "$SO_FILE" ]]; then
+            echo "ERROR: Native build completed but no .so file was found."
+            find "$NATIVE" -maxdepth 5 -type f | sort
+            exit 1
+          fi
+          file "$SO_FILE"
+          file "$SO_FILE" | grep -q 'ELF 32-bit'
           mkdir -p "$GITHUB_WORKSPACE/dist"
-          cp build-mm/jbn_bsp_native.so "$GITHUB_WORKSPACE/dist/jbn_bsp_native.so"
-          file "$GITHUB_WORKSPACE/dist/jbn_bsp_native.so"
-          readelf -h "$GITHUB_WORKSPACE/dist/jbn_bsp_native.so" | grep -E 'Class:|Machine:'
+          cp "$SO_FILE" "$GITHUB_WORKSPACE/dist/jbn_bsp_native.so"
 
       - name: Compile AMXX plugin with official compiler
         shell: bash
         run: |
           set -euo pipefail
-          SOURCE="$PROJECT/bundle/addons/amxmodx/scripting/jbn_grab.sma"
-          CUSTOM_INCLUDE="$PROJECT/bundle/addons/amxmodx/scripting/include"
+          SOURCE="${{ steps.project.outputs.source }}"
+          INCLUDE="${{ steps.project.outputs.include }}"
           OUTPUT="$GITHUB_WORKSPACE/dist/jbn_grab.amxx"
-          test -s "$SOURCE"
-          test -s "$CUSTOM_INCLUDE/jbe_core.inc"
-          cp "$CUSTOM_INCLUDE/jbe_core.inc" "$AMXX_COMPILER/include/jbe_core.inc"
-          cd "$AMXX_COMPILER"
-          export LD_LIBRARY_PATH="$AMXX_COMPILER${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          file ./amxxpc ./amxxpc32.so
-          ldd ./amxxpc || true
-          ./amxxpc "$SOURCE" -i"$AMXX_COMPILER/include" -o"$OUTPUT"
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          cp "$INCLUDE/jbe_core.inc" "$AMXX_SCRIPTING/include/jbe_core.inc"
+          chmod +x "$AMXX_SCRIPTING/amxxpc"
+          cd "$AMXX_SCRIPTING"
+          ./amxxpc "$SOURCE" \
+            -i"$INCLUDE" \
+            -i"$AMXX_SCRIPTING/include" \
+            -o"$OUTPUT"
           test -s "$OUTPUT"
           file "$OUTPUT"
-          ls -lh "$OUTPUT"
 
-      - name: Add configuration and checksums
-        shell: bash
-        run: |
-          set -euo pipefail
-          cp "$PROJECT/bundle/addons/amxmodx/configs/jbn_grab.ini" "$GITHUB_WORKSPACE/dist/"
-          cp "$PROJECT/bundle/INSTALL_RU.txt" "$GITHUB_WORKSPACE/dist/" || true
-          (cd "$GITHUB_WORKSPACE/dist" && sha256sum * > SHA256SUMS.txt)
-          ls -lh "$GITHUB_WORKSPACE/dist"
-
-      - name: Upload build artifacts
+      - name: Upload Linux build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: JBN-GRAB-LINUX-I386
+          name: jbn-grab-linux
           path: dist/
           if-no-files-found: error
