@@ -1,27 +1,53 @@
-          ZIP_FILE="$(find "$GITHUB_WORKSPACE" -maxdepth 2 -type f -iname 'JBN_GRAB_GITHUB_BUILD.zip' -print -quit)"
+name: Build JBN Grab (Linux i386)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - '**'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install i386 build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git curl unzip file gcc-multilib g++-multilib libc6-i386 lib32gcc-s1 lib32stdc++6
+
+      - name: Extract project ZIP and detect project root
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP_FILE="$(find "$GITHUB_WORKSPACE" -maxdepth 3 -type f -iname 'JBN_GRAB_GITHUB_BUILD.zip' -print -quit)"
           if [[ -z "$ZIP_FILE" ]]; then
             echo "ERROR: JBN_GRAB_GITHUB_BUILD.zip was not found in the repository."
-            echo "Files in repository:"
-            find "$GITHUB_WORKSPACE" -maxdepth 3 -type f | sort | head -200
+            find "$GITHUB_WORKSPACE" -maxdepth 4 -type f | sort | head -200
             exit 1
           fi
-
           EXTRACT_DIR="$RUNNER_TEMP/jbn-grab-project"
           mkdir -p "$EXTRACT_DIR"
           unzip -q "$ZIP_FILE" -d "$EXTRACT_DIR"
-
           CMAKE_FILE="$(find "$EXTRACT_DIR" -type f -path '*/bundle/native/jbn_bsp_native/CMakeLists.txt' -print -quit)"
           if [[ -z "$CMAKE_FILE" ]]; then
-            echo "ERROR: Could not find bundle/native/jbn_bsp_native/CMakeLists.txt inside ZIP."
-            find "$EXTRACT_DIR" -maxdepth 6 -type f | sort | head -300
+            echo "ERROR: CMakeLists.txt for jbn_bsp_native was not found inside ZIP."
+            find "$EXTRACT_DIR" -maxdepth 8 -type f | sort | head -300
             exit 1
           fi
-
-          PROJECT="$(dirname "$(dirname "$(dirname "$CMAKE_FILE")")")"
+          PROJECT="$(cd "$(dirname "$CMAKE_FILE")/../../.." && pwd)"
           SOURCE="$PROJECT/bundle/addons/amxmodx/scripting/jbn_grab.sma"
           INCLUDE="$PROJECT/bundle/addons/amxmodx/scripting/include"
           NATIVE="$PROJECT/bundle/native/jbn_bsp_native"
-
           test -f "$SOURCE"
           test -f "$INCLUDE/jbe_core.inc"
           test -f "$NATIVE/build_metamod_linux.sh"
@@ -55,7 +81,6 @@
           cd "$NATIVE"
           chmod +x build_metamod_linux.sh
           ./build_metamod_linux.sh
-
           SO_FILE="$(find "$NATIVE" -type f -name '*.so' -print -quit)"
           if [[ -z "$SO_FILE" ]]; then
             echo "ERROR: Native build completed but no .so file was found."
@@ -78,10 +103,7 @@
           cp "$INCLUDE/jbe_core.inc" "$AMXX_SCRIPTING/include/jbe_core.inc"
           chmod +x "$AMXX_SCRIPTING/amxxpc"
           cd "$AMXX_SCRIPTING"
-          ./amxxpc "$SOURCE" \
-            -i"$INCLUDE" \
-            -i"$AMXX_SCRIPTING/include" \
-            -o"$OUTPUT"
+          ./amxxpc "$SOURCE" -i"$INCLUDE" -i"$AMXX_SCRIPTING/include" -o"$OUTPUT"
           test -s "$OUTPUT"
           file "$OUTPUT"
 
