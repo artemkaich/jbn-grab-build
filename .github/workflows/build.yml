@@ -1,5 +1,5 @@
 
-name: JBN Grab Diagnostic Build
+name: Build JBN Grab Metamod (Linux i386)
 
 on:
   workflow_dispatch:
@@ -11,220 +11,133 @@ permissions:
   contents: read
 
 jobs:
-  diagnose:
+  build:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install Linux i386 dependencies
+        shell: bash
         run: |
+          set -euo pipefail
+
           sudo dpkg --add-architecture i386
           sudo apt-get update
-          sudo apt-get install -y \
-            unzip curl file python3 \
-            build-essential cmake git \
-            gcc-multilib g++-multilib \
-            libc6-i386 lib32gcc-s1 lib32stdc++6
 
-      - name: Extract project
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            git \
+            curl \
+            unzip \
+            file \
+            gcc-multilib \
+            g++-multilib \
+            libc6-i386 \
+            lib32gcc-s1 \
+            lib32stdc++6
+
+      - name: Extract project ZIP
         id: project
         shell: bash
         run: |
           set -euo pipefail
 
-          ZIP=$(find . -name 'JBN_GRAB_GITHUB_BUILD.zip' -print -quit)
-          test -n "$ZIP"
+          ZIP_FILE="$(find "$GITHUB_WORKSPACE" \
+            -maxdepth 4 \
+            -type f \
+            -iname 'JBN_GRAB_GITHUB_BUILD.zip' \
+            -print -quit)"
 
-          mkdir -p "$RUNNER_TEMP/project"
-          unzip -q "$ZIP" -d "$RUNNER_TEMP/project"
+          if [[ -z "$ZIP_FILE" ]]; then
+            echo "ERROR: Project ZIP not found!"
+            exit 1
+          fi
 
-          CMAKE=$(find "$RUNNER_TEMP/project" \
+          EXTRACT_DIR="$RUNNER_TEMP/jbn-grab-project"
+
+          mkdir -p "$EXTRACT_DIR"
+          unzip -q "$ZIP_FILE" -d "$EXTRACT_DIR"
+
+          CMAKE_FILE="$(find "$EXTRACT_DIR" \
+            -type f \
             -path '*/bundle/native/jbn_bsp_native/CMakeLists.txt' \
-            -print -quit)
+            -print -quit)"
 
-          test -n "$CMAKE"
+          if [[ -z "$CMAKE_FILE" ]]; then
+            echo "ERROR: Native CMakeLists.txt not found!"
+            find "$EXTRACT_DIR" -type f | sort
+            exit 1
+          fi
 
-          PROJECT=$(cd "$(dirname "$CMAKE")/../../.." && pwd)
+          PROJECT="$(cd "$(dirname "$CMAKE_FILE")/../../.." && pwd)"
 
-          SOURCE="$PROJECT/bundle/addons/amxmodx/scripting/jbn_grab.sma"
-          INCLUDE="$PROJECT/bundle/addons/amxmodx/scripting/include"
+          NATIVE="$PROJECT/bundle/native/jbn_bsp_native"
 
-          test -f "$SOURCE"
-          test -f "$INCLUDE/jbe_core.inc"
+          test -f "$NATIVE/CMakeLists.txt"
+          test -f "$NATIVE/build_metamod_linux.sh"
 
-          echo "source=$SOURCE" >> "$GITHUB_OUTPUT"
-          echo "include=$INCLUDE" >> "$GITHUB_OUTPUT"
+          echo "native=$NATIVE" >> "$GITHUB_OUTPUT"
 
           echo "Project: $PROJECT"
-          wc -lc "$SOURCE"
+          echo "Native source: $NATIVE"
 
-      - name: Download AMXX 1.9.0 from GitHub
-        run: |
-          set -euo pipefail
-
-          URL="https://github.com/alliedmodders/amxmodx/releases/download/1.9.0.5303/amxmodx-1.9.0-git5303-base-linux.tar.gz"
-
-          curl -fL --retry 3 "$URL" \
-            -o "$RUNNER_TEMP/amxx.tar.gz"
-
-          mkdir -p "$RUNNER_TEMP/amxx"
-
-          tar -xzf "$RUNNER_TEMP/amxx.tar.gz" \
-            -C "$RUNNER_TEMP/amxx"
-
-          AMXX="$RUNNER_TEMP/amxx/addons/amxmodx/scripting"
-
-          test -x "$AMXX/amxxpc"
-
-          chmod +x "$AMXX/amxxpc"
-
-          echo "AMXX_SCRIPTING=$AMXX" >> "$GITHUB_ENV"
-
-          "$AMXX/amxxpc" 2>&1 | head -10 || true
-
-      - name: Prepare includes
-        run: |
-          set -euo pipefail
-
-          INCLUDE="${{ steps.project.outputs.include }}"
-
-          cp "$INCLUDE/jbe_core.inc" \
-            "$AMXX_SCRIPTING/include/jbe_core.inc"
-
-      - name: Diagnose compiler crash
+      - name: Build Metamod plugin Linux i386
         shell: bash
         run: |
-          set -uo pipefail
+          set -euo pipefail
 
-          python3 - <<'PY'
-          import os
-          import re
-          import subprocess
-          from pathlib import Path
+          NATIVE="${{ steps.project.outputs.native }}"
 
-          source = Path("${{ steps.project.outputs.source }}")
-          include = "${{ steps.project.outputs.include }}"
+          cd "$NATIVE"
 
-          compiler = Path(os.environ["AMXX_SCRIPTING"]) / "amxxpc"
-          compiler_inc = Path(os.environ["AMXX_SCRIPTING"]) / "include"
+          chmod +x build_metamod_linux.sh
 
-          text = source.read_text(
-              encoding="utf-8",
-              errors="replace"
-          )
+          echo "=================================="
+          echo "Building JBN Grab Metamod plugin"
+          echo "Target: Linux i386"
+          echo "=================================="
 
-          pattern = re.compile(
-              r'^(?:(?:public|stock)\s+)?'
-              r'(?:(?:Float|bool|[A-Za-z_]\w*):\s*)?'
-              r'([A-Za-z_]\w*)\s*\([^;{}]*?\)\s*\{',
-              re.MULTILINE
-          )
+          ./build_metamod_linux.sh
 
-          excluded = {"if", "for", "while", "switch"}
+          echo "Searching for compiled shared library..."
 
-          matches = [
-              m for m in pattern.finditer(text)
-              if m.group(1) not in excluded
-          ]
+          SO_FILE="$(find "$NATIVE" \
+            -type f \
+            -name '*.so' \
+            -print -quit)"
 
-          print(f"Source lines: {len(text.splitlines())}")
-          print(f"Detected function candidates: {len(matches)}")
+          if [[ -z "$SO_FILE" ]]; then
+            echo "ERROR: No .so file was generated!"
+            find "$NATIVE" -maxdepth 7 -type f | sort
+            exit 1
+          fi
 
-          if not matches:
-              print("Could not detect function declarations.")
-              raise SystemExit(1)
+          echo "Compiled library: $SO_FILE"
 
-          temp = Path(os.environ["RUNNER_TEMP"])
-          test_file = temp / "jbn_test.sma"
-          output = temp / "jbn_test.amxx"
+          file "$SO_FILE"
 
-          def compile_test(count):
-              end = matches[count].start() if count < len(matches) else len(text)
+          if ! file "$SO_FILE" | grep -q 'ELF 32-bit'; then
+            echo "ERROR: Expected Linux 32-bit ELF library!"
+            exit 1
+          fi
 
-              test_file.write_text(text[:end], encoding="utf-8")
+          mkdir -p "$GITHUB_WORKSPACE/dist"
 
-              cmd = [
-                  str(compiler),
-                  str(test_file),
-                  f"-i{include}",
-                  f"-i{compiler_inc}",
-                  f"-o{output}"
-              ]
+          cp "$SO_FILE" \
+            "$GITHUB_WORKSPACE/dist/jbn_bsp_native.so"
 
-              try:
-                  result = subprocess.run(
-                      cmd,
-                      stdout=subprocess.PIPE,
-                      stderr=subprocess.STDOUT,
-                      text=True,
-                      timeout=120
-                  )
+          echo "=================================="
+          echo "BUILD SUCCESSFUL"
+          echo "=================================="
 
-                  log = result.stdout or ""
+          ls -lh "$GITHUB_WORKSPACE/dist/"
 
-                  crashed = (
-                      result.returncode in (-6, 134, 139)
-                      or "std::bad_alloc" in log
-                  )
-
-                  print(
-                      f"Functions: {count}/{len(matches)} "
-                      f"Exit: {result.returncode} "
-                      f"Crash: {crashed}"
-                  )
-
-                  if crashed:
-                      print(log[-3000:])
-
-                  return crashed
-
-              except subprocess.TimeoutExpired:
-                  print("Compiler timeout.")
-                  return False
-
-          print("Testing global declarations...")
-
-          if compile_test(0):
-              print("CRASH: GLOBAL DECLARATIONS OR INCLUDES")
-              raise SystemExit(0)
-
-          print("Testing complete source...")
-
-          if not compile_test(len(matches)):
-              print("Full source did not reproduce bad_alloc.")
-              raise SystemExit(0)
-
-          low = 1
-          high = len(matches)
-
-          while low < high:
-              middle = (low + high) // 2
-
-              if compile_test(middle):
-                  high = middle
-              else:
-                  low = middle + 1
-
-          culprit = matches[low - 1]
-
-          line = text.count("\n", 0, culprit.start()) + 1
-
-          print("")
-          print("========== RESULT ==========")
-          print("First crashing source prefix:")
-          print("Function:", culprit.group(1))
-          print("Line:", line)
-          print("============================")
-
-          PY
-
-      - name: Upload diagnostic information
-        if: always()
+      - name: Upload Metamod artifact
         uses: actions/upload-artifact@v4
         with:
-          name: jbn-grab-diagnostic
-          path: |
-            ${{ runner.temp }}/jbn_test.sma
-          if-no-files-found: warn
+          name: jbn-grab-metamod-linux-i386
+          path: dist/jbn_bsp_native.so
+          if-no-files-found: error
