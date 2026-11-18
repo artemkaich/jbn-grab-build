@@ -37,19 +37,27 @@ jobs:
           file "$GITHUB_WORKSPACE/dist/jbn_bsp_native.so"
           readelf -h "$GITHUB_WORKSPACE/dist/jbn_bsp_native.so" | grep -E 'Class:|Machine:'
 
-      - name: Compile AMXX plugin
+            - name: Compile AMXX plugin
         shell: bash
         run: |
           set -euo pipefail
-          cd JBN_GRAB_GITHUB_BUILD
-          chmod +x amxmodx-compiler/amxxpc
+
+          PROJECT="$GITHUB_WORKSPACE/JBN_GRAB_GITHUB_BUILD"
+          cd "$PROJECT/amxmodx-compiler"
+
+          chmod +x amxxpc
+          export LD_LIBRARY_PATH="$PWD:${LD_LIBRARY_PATH:-}"
+
           mkdir -p "$GITHUB_WORKSPACE/dist"
-          ./amxmodx-compiler/amxxpc \
-            "$GITHUB_WORKSPACE/JBN_GRAB_GITHUB_BUILD/bundle/addons/amxmodx/scripting/jbn_grab.sma" \
-            -i"$GITHUB_WORKSPACE/JBN_GRAB_GITHUB_BUILD/bundle/addons/amxmodx/scripting/include" \
-            -i"$GITHUB_WORKSPACE/JBN_GRAB_GITHUB_BUILD/amxmodx-compiler/include" \
+
+          ./amxxpc \
+            "$PROJECT/bundle/addons/amxmodx/scripting/jbn_grab.sma" \
+            -i"$PROJECT/bundle/addons/amxmodx/scripting/include" \
+            -i"$PROJECT/amxmodx-compiler/include" \
             -o"$GITHUB_WORKSPACE/dist/jbn_grab.amxx"
+
           test -s "$GITHUB_WORKSPACE/dist/jbn_grab.amxx"
+          ls -lh "$GITHUB_WORKSPACE/dist/"
 
       - name: Include installation files and checksums
         run: |
